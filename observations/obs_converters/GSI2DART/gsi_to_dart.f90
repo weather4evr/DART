@@ -41,7 +41,8 @@ namelist /gsi_to_dart_nml/ ens_size, &
 call mpi_initialize  ! sets nproc, numproc (from mpisetup), where nproc is process number, numproc is total number of processes
 
 ! Print out some info
-if ( nproc == 0 ) call initialize_utilities('gsi2dart')
+!if ( nproc == 0 ) call initialize_utilities('gsi2dart')
+call initialize_utilities('gsi2dart')
 
 ! Read namelist on all PEs
 call find_namelist_in_file("input.nml", "gsi_to_dart_nml", unitnml)
@@ -52,6 +53,11 @@ call check_namelist_read(unitnml, io, "gsi_to_dart_nml")
 if (numproc .lt. ens_size+1) then
    print *,'total number of mpi tasks must be >= ens_size+1'
    print *,'tasks, ens_size+1 = ',numproc,ens_size+1
+   call stop2(19)
+endif
+
+if (ens_size .le. 1) then
+   print *,'set ens_size >= 2 '
    call stop2(19)
 endif
 
@@ -206,7 +212,8 @@ if ( convert_sat ) call radinfo_clean  ! from radinfo
 call mpi_cleanup ! from mpisetup
 
 ! print ending info
-if ( nproc == 0 ) call finalize_utilities()
+!if ( nproc == 0 ) call finalize_utilities()
+call finalize_utilities()
 
 end program gsi_to_dart
 

@@ -121,7 +121,8 @@ public :: init_obs_def, get_obs_def_key, get_obs_def_location, get_obs_def_type_
    set_obs_def_key, interactive_obs_def, write_obs_def, read_obs_def, &
    obs_def_type, get_expected_obs_from_def_distrib_state, destroy_obs_def, copy_obs_def, &
    assignment(=), set_obs_def_external_FO, set_obs_def_write_external_FO, &
-   eq_obs_def, ne_obs_def, operator(==), operator(/=), print_obs_def
+   eq_obs_def, ne_obs_def, operator(==), operator(/=), print_obs_def, &
+   set_obs_def_bc_predictors, get_obs_def_biaspreds, return_external_FO ! CSS added this line for biaspreds
 
 ! version controlled file description for error handling, do not edit
 character(len=256), parameter :: source   = &
@@ -143,9 +144,14 @@ type obs_def_type
    integer               :: key        ! Used by specialized observation types
    logical               :: write_external_FO = .false.
    logical               :: has_external_FO   = .false.
-   real(r8), allocatable :: external_FO(:)
+   real(r8), allocatable :: external_FO(:) ! dimension(ens_size+1), 1:ens_size H(x_i), ens_size+1: H(x_bar)
    integer               :: external_FO_key
    integer               :: ens_size
+   logical               :: has_biaspreds = .false. ! CSS Bias correction predictor variables
+   integer               :: npred
+   real(r8), allocatable :: biaspreds(:)  ! dimension(npred+2).  1:npred: BC predictors
+                                          ! npred+1: total scan angle BC AMOUNT
+                                          ! npred+2: total BC AMOUNT summed over all predictors
 end type obs_def_type
 
 logical, save :: module_initialized = .false.
@@ -153,6 +159,10 @@ logical, save :: module_initialized = .false.
 ! define a fixed integer code that specifies whether a record 
 ! in a binary obs_sequence file is a precomputed FO rather than a time_type
 integer, parameter :: external_prior_code = -123
+
+! CSS bias_correction_predictor_code
+integer, parameter :: bc_predictor_code = -999
+integer            :: dummy999
 
 contains
 
@@ -219,6 +229,11 @@ obs_def1%has_external_FO = obs_def2%has_external_FO
 if ( obs_def1%has_external_FO ) then
    call set_obs_def_external_FO(obs_def1, obs_def1%has_external_FO, obs_def2%write_external_FO,  &
                                 obs_def2%external_FO_key, obs_def2%ens_size, obs_def2%external_FO)
+endif
+
+obs_def1%has_biaspreds = obs_def2%has_biaspreds !CSS added this chunk
+if ( obs_def1%has_biaspreds ) then
+   call set_obs_def_bc_predictors(obs_def1, obs_def1%has_biaspreds, obs_def2%npred, obs_def2%biaspreds)
 endif
 
 end subroutine copy_obs_def
@@ -418,19 +433,63 @@ type(obs_def_type), intent(inout) :: obs_def
 logical,            intent(in)    :: has_external_FO
 logical,            intent(in)    :: write_external_FO
 integer,            intent(in)    :: external_FO_key, ens_size
-real(r8),           intent(in)    :: external_FO_values(ens_size)
+real(r8),           intent(in)    :: external_FO_values(ens_size+1) !CSS made ens_size+1 (rather than ens_size)
 
 if ( .not. module_initialized ) call initialize_module
 
-if ( .not. allocated(obs_def%external_FO)) allocate(obs_def%external_FO(ens_size))
+if ( .not. allocated(obs_def%external_FO)) allocate(obs_def%external_FO(ens_size+1)) ! CSS made ens_size+1 (rather than ens_size)
 
 obs_def%has_external_FO   = has_external_FO
 obs_def%write_external_FO = write_external_FO
 obs_def%external_FO_key   = external_FO_key
 obs_def%ens_size          = ens_size
-obs_def%external_FO(1:ens_size)  = external_FO_values(1:ens_size)
+obs_def%external_FO(1:ens_size+1)  = external_FO_values(1:ens_size+1) ! CSS made ens_size+1 (rather than ens_size)
 
 end subroutine set_obs_def_external_FO 
+
+!----------------------------------------------------------------------------
+
+function return_external_FO(obs_def,i) ! CSS added this subroutine
+
+! Returns an external_FO 
+
+type(obs_def_type), intent(in) :: obs_def
+integer,            intent(in) :: i
+real(r8)                       :: return_external_FO
+
+if ( .not. module_initialized ) call initialize_module
+
+if ( .not. allocated(obs_def%external_FO)) then ! It should be allocated if we're calling this
+   call error_handler(E_ERR, 'return_external_FO', &
+      'obs_def%external_FO not allocated. uh oh.', &
+       source, revision, revdate)
+endif
+
+if ( obs_def%has_external_FO ) then
+   return_external_FO = obs_def%external_FO(i)
+else
+   call error_handler(E_ERR, 'return_external_FO', &
+      'Attempt to access an external FO that is not there. uh oh.', &
+       source, revision, revdate)
+endif
+end function return_external_FO ! End CSS
+
+!----------------------------------------------------------------------------
+
+subroutine set_obs_def_bc_predictors(obs_def, has_biaspreds, npred, biaspreds)
+   type(obs_def_type), intent(inout) :: obs_def
+   logical,            intent(in)    :: has_biaspreds
+   integer,            intent(in)    :: npred
+   real(r8),           intent(in)    :: biaspreds(npred+2)
+
+   if ( .not. module_initialized ) call initialize_module
+
+   if ( .not. allocated(obs_def%biaspreds)) allocate(obs_def%biaspreds(npred+2))
+
+   obs_def%has_biaspreds       = has_biaspreds
+   obs_def%npred               = npred
+   obs_def%biaspreds(1:npred+2)  = biaspreds(1:npred+2)
+end subroutine set_obs_def_bc_predictors
 
 !----------------------------------------------------------------------------
 
@@ -525,7 +584,7 @@ if(assimilate_this_ob .or. evaluate_this_ob) then
    if (use_precomputed_FO) then 
       if (isprior) then
          if ( obs_def%has_external_FO ) then
-            expected_obs(:) = obs_def%external_FO(:) 
+            expected_obs(:) = obs_def%external_FO(1:ens_size)  ! CSS made it explicit to go to 1:ens_size
             istatus = 0 
          else 
             call error_handler(E_ERR, 'get_expected_obs_from_def', &
@@ -613,6 +672,7 @@ logical            :: is_ascii
 character(len=32)  :: fileformat   ! here for backwards compatibility only
 character(len=512) :: errstring
 character(len=11)  :: header_external_FO 
+character(len=17) :: header_bias_corr_predictor ! CSS
 integer            :: ii, secs,days 
 character(len=128) :: string 
 logical            :: time_set
@@ -693,20 +753,45 @@ time_set = .false.
 obs_def%write_external_FO = .false.  ! Always false when actually running DART
 if (is_ascii) then
    read(ifile,fmt='(a)') string
+
+   if ( string(1:17) == 'radiance_biaspred' ) then
+      read(string, FMT='(a17, 2i8)') header_bias_corr_predictor, obs_def%npred, dummy999
+      if ( .not. allocated(obs_def%biaspreds)) allocate(obs_def%biaspreds(obs_def%npred+2))
+      read(ifile, *) (obs_def%biaspreds(ii), ii=1,obs_def%npred+2)
+      obs_def%has_biaspreds = .true.
+      ! read the next line
+      read(ifile,fmt='(a)') string 
+   else
+      obs_def%has_biaspreds = .false.
+   endif
+
    if (string(1:11) /= 'external_FO') then 
       ! no metadata, we really just read the time.
       backspace(ifile) ! go back to previous line to prepare to read time
       obs_def%has_external_FO = .false.
    else ! we have a precomputed FO
-      read(string, *) header_external_FO, obs_def%ens_size, obs_def%external_FO_key
+      !read(string, *) header_external_FO, obs_def%ens_size, obs_def%external_FO_key
       ! FIXME: remove this if * works ok
-      !read(string, FMT='(a11, 2i8)') header_external_FO, obs_def%ens_size, obs_def%external_FO_key
-      if ( .not. allocated(obs_def%external_FO)) allocate(obs_def%external_FO(obs_def%ens_size))
-      read(ifile, *) (obs_def%external_FO(ii), ii=1,obs_def%ens_size)
+      read(string, FMT='(a11, 2i10)') header_external_FO, obs_def%ens_size, obs_def%external_FO_key
+      if ( .not. allocated(obs_def%external_FO)) allocate(obs_def%external_FO(obs_def%ens_size+1)) ! CSS made ens_size + 1 instead of ens_size
+      read(ifile, *) (obs_def%external_FO(ii), ii=1,obs_def%ens_size+1) ! CSS made ens_size + 1 instead of ens_size
       obs_def%has_external_FO = .true.
    endif
 else
    read(ifile) secs, days
+
+   if ( days == bc_predictor_code ) then
+      obs_def%npred = secs
+      if ( .not. allocated(obs_def%biaspreds)) allocate(obs_def%biaspreds(obs_def%npred+2))
+      read(ifile) (obs_def%biaspreds(ii), ii=1,obs_def%npred+2)
+      obs_def%has_biaspreds = .true.
+
+      ! read the next line
+      read(ifile) secs, days
+   else
+      obs_def%has_biaspreds = .false.
+   endif
+
    if ( days /= external_prior_code ) then
       ! no metadata, we really just read the time
       ! can't use backspace on a binary file.
@@ -717,8 +802,8 @@ else
       counter = counter + 1
       obs_def%ens_size = secs
       obs_def%external_FO_key = counter
-      if ( .not. allocated(obs_def%external_FO)) allocate(obs_def%external_FO(obs_def%ens_size))
-      read(ifile)    (obs_def%external_FO(ii), ii=1,obs_def%ens_size)
+      if ( .not. allocated(obs_def%external_FO)) allocate(obs_def%external_FO(obs_def%ens_size+1)) ! CSS made ens_size + 1 instead of ens_size
+      read(ifile)    (obs_def%external_FO(ii), ii=1,obs_def%ens_size+1) ! CSS made ens_size + 1 instead of ens_size
       obs_def%has_external_FO = .true.
    endif
 endif
@@ -793,12 +878,29 @@ select case(obs_def%kind)
          source, revision, revdate)
 end select
 
+if ( obs_def%has_biaspreds ) then
+   if ( .not. allocated(obs_def%biaspreds)) then
+      call error_handler(E_ERR, 'write_obs_def', &
+         'obs_def%biaspreds not allocated but writing was requested.', &
+         source, revision, revdate, text2='observation type '//trim(get_name_for_type_of_obs(obs_def%kind)))
+   endif
+   if (is_ascii) then
+      write(ifile, 11) obs_def%npred, bc_predictor_code
+      write(ifile, *) (obs_def%biaspreds(ii), ii=1,obs_def%npred+2)
+   else
+      write(ifile)    obs_def%npred, bc_predictor_code
+      write(ifile)    (obs_def%biaspreds(ii), ii=1,obs_def%npred+2)
+   endif
+11  format('radiance_biaspred', 2i8)
+endif
+
 ! obs_def%write_external_FO should only be true for program 
 ! actually WRITING the external data.  When running DART
 ! obs_def%write_external_FO should be false and no metadata will be written
 ! Also want obs_def%write_external_FO to somehow be true when this called from
 ! the obs_sequence_tool program
-if ( obs_def%has_external_FO .and. obs_def%write_external_FO ) then 
+!if ( obs_def%has_external_FO .and. obs_def%write_external_FO ) then 
+if ( obs_def%has_external_FO ) then ! CSS modify  so obs_sequence_tool can output external priors
    if ( .not. allocated(obs_def%external_FO)) then
       call error_handler(E_ERR, 'write_obs_def', &
          'obs_def%external_FO not allocated but writing was requested.', &
@@ -806,12 +908,12 @@ if ( obs_def%has_external_FO .and. obs_def%write_external_FO ) then
    endif
    if (is_ascii) then
       write(ifile, 12) obs_def%ens_size, obs_def%external_FO_key
-      write(ifile, *) (obs_def%external_FO(ii), ii=1,obs_def%ens_size)
+      write(ifile, *) (obs_def%external_FO(ii), ii=1,obs_def%ens_size+1) ! CSS made ens_size + 1 instead of ens_size
    else
       write(ifile)    obs_def%ens_size, external_prior_code
-      write(ifile)    (obs_def%external_FO(ii), ii=1,obs_def%ens_size)
+      write(ifile)    (obs_def%external_FO(ii), ii=1,obs_def%ens_size+1) ! CSS made ens_size + 1 instead of ens_size
    endif
-12  format('external_FO', 2i8)
+12  format('external_FO', 2i10)
 endif
 
 call write_time(ifile, obs_def%time, fform)
@@ -897,9 +999,18 @@ call set_obs_def_error_variance( obs_def, missing_r8)
 call set_obs_def_external_FO(obs_def, .false., .false., missing_i, 1, (/missing_r8/))
 if ( allocated(obs_def%external_FO)) deallocate(obs_def%external_FO) ! CSS
 
+call set_obs_def_bc_predictors(obs_def, .false., 1, (/missing_r8/)) ! CSS
+if ( allocated(obs_def%biaspreds)) deallocate(obs_def%biaspreds) ! CSS
 end subroutine destroy_obs_def
 
 
+function get_obs_def_biaspreds(obs_def,num_elements,index_start,index_end) ! CSS added
+   type(obs_def_type), intent(in) :: obs_def
+   integer(i8), intent(in)        :: num_elements,index_start,index_end
+   real(r8) :: get_obs_def_biaspreds(num_elements)
+   if ( .not. module_initialized ) call initialize_module
+   get_obs_def_biaspreds(1:num_elements) = obs_def%biaspreds(index_start:index_end)
+end function get_obs_def_biaspreds
 
 !---------------------------------------------------------------------------
 !---------------------------------------------------------------------------

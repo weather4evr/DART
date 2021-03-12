@@ -180,10 +180,10 @@ real(r8), parameter :: rcv = rgas/(cp-rgas)
 real(r8), parameter :: radius = 6371229.0 ! meters
 
 ! roundoff error for single precision
-!real(r8), parameter :: roundoff = 1.0e-5_r8
+real(r8), parameter :: roundoff = 1.0e-5_r8 ! CSS commented in 
 
 ! r8 r4
-real(r8), parameter :: roundoff = 1.0e-12_r8
+!real(r8), parameter :: roundoff = 1.0e-12_r8 ! CSS commented out
 
 ! Storage for a random sequence for perturbing a single initial state
 type(random_seq_type) :: random_seq
@@ -215,6 +215,7 @@ integer            :: xyzdebug = 0
 character(len=32)  :: calendar = 'Gregorian'
 character(len=256) :: model_analysis_filename = 'mpas_init.nc'
 character(len=256) :: grid_definition_filename = 'mpas_init.nc'
+logical            :: normalize_scale_height_by_surface_pressure = .true. ! CSS added, if true to get scale height divide by sfc pressure
 
 integer :: domid ! For state_structure_mod access
 
@@ -261,7 +262,8 @@ namelist /model_nml/             &
    highest_obs_pressure_mb,      &
    outside_grid_level_tolerance, &
    extrapolate,                  &
-   sfc_elev_max_diff
+   sfc_elev_max_diff,            &
+   normalize_scale_height_by_surface_pressure ! CSS added this line
 
 ! DART state vector contents are specified in the input.nml:&mpas_vars_nml namelist.
 integer, parameter :: max_state_variables = 80
@@ -4455,16 +4457,20 @@ select case (ztypeout)
        ivars(2) = get_progvar_index_from_kind(QTY_DENSITY)
        ivars(3) = get_progvar_index_from_kind(QTY_VAPOR_MIXING_RATIO)
 
-       ! Get theta, rho, qv at the interpolated location
-       call compute_scalar_with_barycentric (state_handle, ens_size, location(1), 3, ivars, values, istatus)
-       !if (istatus /= 0) return
+       if ( ztypein == VERTISPRESSURE ) then ! CSS added this condition...should only be true for an observation
+         fullp(:) = zin(:)      ! CSS
+       else ! CSS original code was this else block
+          ! Get theta, rho, qv at the interpolated location
+          call compute_scalar_with_barycentric (state_handle, ens_size, location(1), 3, ivars, values, istatus)
+          !if (istatus /= 0) return
 
-       ! Convert theta, rho, qv into pressure
-       call compute_full_pressure(ens_size, values(1, :), values(2, :), values(3, :), fullp(:), tk(:), istatus(:))
-       if (debug > 9) then
-         write(string2,'("zout_full_pressure, theta, rho, qv:",3F10.2,F18.8)') fullp, values(1:3,1)
-         call error_handler(E_MSG, 'convert_vert_distrib',string2,source, revision, revdate)
-       endif
+          ! Convert theta, rho, qv into pressure
+          call compute_full_pressure(ens_size, values(1, :), values(2, :), values(3, :), fullp(:), tk(:), istatus(:))
+          if (debug > 9) then
+             write(string2,'("zout_full_pressure, theta, rho, qv:",3F10.2,F18.8)') fullp, values(1:3,1)
+             call error_handler(E_MSG, 'convert_vert_distrib',string2,source, revision, revdate)
+          endif
+        endif  ! CSS
 
        ! Get theta, rho, qv at the surface corresponding to the interpolated location
        surfloc(1) = set_location(llv_loc(1, 1), llv_loc(2, 1), 1.0_r8, VERTISLEVEL)
@@ -4479,16 +4485,54 @@ select case (ztypeout)
        endif
 
        ! and finally, convert into scale height
-       where (surfp /= 0.0_r8 .and. fullp /= MISSING_R8)
-         zout = -log(fullp / surfp)
-       else where
-         zout = MISSING_R8
-       end where
+       if ( normalize_scale_height_by_surface_pressure ) then ! CSS added conditional
+          where (surfp /= 0.0_r8 .and. fullp /= MISSING_R8)
+             zout = -log(fullp / surfp)
+          else where
+             zout = MISSING_R8
+          end where
+       else ! CSS added this else block
+           where (fullp /= 0.0_r8 .and. fullp /= MISSING_R8)
+              zout = -log(fullp)
+           else where
+             zout = MISSING_R8
+           end where
+       endif ! End CSS
 
-     else
+     else ! CSS this else block will execute for 1D MPAS state variables like surface_pressure
 
-       zout = -log(1.0_r8)
-       istatus(:) = 0
+      ! CSS this is the original code
+      !zout = -log(1.0_r8)
+      !istatus(:) = 0
+      
+       ! Begin CSS 
+       if ( normalize_scale_height_by_surface_pressure ) then
+          zout = -log(1.0_r8)
+       else 
+          ivars(1) = get_progvar_index_from_kind(QTY_POTENTIAL_TEMPERATURE)
+          ivars(2) = get_progvar_index_from_kind(QTY_DENSITY)
+          ivars(3) = get_progvar_index_from_kind(QTY_VAPOR_MIXING_RATIO)
+
+          ! Get theta, rho, qv at the surface corresponding to the interpolated location
+          surfloc(1) = set_location(llv_loc(1, 1), llv_loc(2, 1), 1.0_r8, VERTISLEVEL)
+          call compute_scalar_with_barycentric (state_handle, ens_size, surfloc(1), 3, ivars, values, istatus)
+          if( all(istatus /= 0) ) return
+
+          ! Convert surface theta, rho, qv into pressure
+          call compute_full_pressure(ens_size, values(1, :), values(2, :), values(3, :), surfp(:), tk(:), istatus(:))
+          if (debug > 9) then
+            write(string2,'("zout_surf_pressure, theta, rho, qv:",3F10.2,F18.8)') surfp, values(1:3,1)
+            call error_handler(E_MSG, 'convert_vert_distrib',string2,source, revision, revdate)
+          endif
+
+          where (surfp /= 0.0_r8 .and. surfp /= MISSING_R8)
+             zout = -log(surfp)
+          else where
+             zout = MISSING_R8
+          end where
+          istatus(:) = 0
+       endif
+       ! End CSS
 
      endif
 

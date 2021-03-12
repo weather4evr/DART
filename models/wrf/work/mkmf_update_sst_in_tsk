@@ -1,0 +1,17 @@
+#!/bin/csh
+#
+# DART software - Copyright © 2004 - 2010 UCAR. This open source software is
+# provided by UCAR, "as is", without charge, subject to all terms of use at
+# http://www.image.ucar.edu/DAReS/DART/DART_download
+#
+# $Id: mkmf_update_sst_in_tsk 4631 2011-01-05 16:32:59Z thoar $
+
+../../../build_templates/mkmf -p update_sst_in_tsk -t ../../../build_templates/mkmf.template -c"-Duse_netCDF" \
+ -a "../../.." path_names_update_sst_in_tsk
+
+exit $status
+
+# <next few lines under version control, do not edit>
+# $URL: http://subversion.ucar.edu/DAReS/DART/trunk/models/wrf/work/mkmf_update_sst_in_tsk $
+# $Revision: 4631 $
+# $Date: 2011-01-05 09:32:59 -0700 (Wed, 05 Jan 2011) $

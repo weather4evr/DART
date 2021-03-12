@@ -211,6 +211,7 @@ logical :: verbose               = .false.
 logical :: outliers_in_histogram = .false.
 logical :: create_rank_histogram = .true.
 logical :: use_zero_error_obs    = .false.
+real(r8) :: max_good_obs_error   = 999999.0_r8 ! CSS maximum observation error that's okay
 
 namelist /obs_diag_nml/ obs_sequence_name, obs_sequence_list,                 &
                        first_bin_center, last_bin_center,                     &
@@ -220,7 +221,8 @@ namelist /obs_diag_nml/ obs_sequence_name, obs_sequence_list,                 &
                        reg_names, print_mismatched_locs, print_obs_locations, &
                        create_rank_histogram, outliers_in_histogram,          &
                        plevel_edges, hlevel_edges, mlevel_edges,              &
-                       verbose, trusted_obs, use_zero_error_obs
+                       verbose, trusted_obs, use_zero_error_obs,              &
+                       max_good_obs_error ! CSS added this line
 
 !-----------------------------------------------------------------------
 ! Variables used to accumulate the statistics.
@@ -610,6 +612,7 @@ ObsFileLoop : do ifile=1, num_input_files
          obs_error_variance = obs_error_variance * &
                        scale_factor(flavor) * scale_factor(flavor)
 
+         if ( obs_error_variance .gt. max_good_obs_error ) cycle ObservationLoop ! CSS don't process obs with big obs errors
          ! Check consistency of the vertical coordinate system
          ! Sometimes observations of the same flavor from different sources
          ! are defined on different vertical coordinates.
@@ -1861,6 +1864,10 @@ do ivar = 1,SIZE(scale_factor)
    obs_string = obs_type_strings(ivar)
 
    if ( index(obs_string,'SURFACE_PRESSURE') > 0 ) &
+          scale_factor(ivar) = 0.01_r8
+
+   ! CSS added this
+   if ( index(obs_string,'SFC_PRESSURE') > 0 ) &
           scale_factor(ivar) = 0.01_r8
 
    if ( index(obs_string,'SPECIFIC_HUMIDITY') > 0 ) &

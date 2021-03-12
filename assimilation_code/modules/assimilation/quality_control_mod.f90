@@ -26,6 +26,8 @@ use obs_sequence_mod, only : obs_sequence_type, init_obs, get_obs_from_key, &
 
 use obs_def_mod,      only : get_obs_def_type_of_obs, obs_def_type
 
+use obs_kind_mod, only : RADAR_REFLECTIVITY, RADAR_CLEARAIR_REFLECTIVITY  ! CSS added for enable_special_outlier_code
+
 !------------------------------------------------------------------------------
 
 implicit none
@@ -270,7 +272,13 @@ logical  :: failed
 ! only if it is still successful (assim or eval, 0 or 1), then check
 ! for failing outlier test.
 
-if ( (outlier_threshold < 0) .or. (.not. good_dart_qc(dart_qc)) ) return
+! CSS--note that outlier_threshold is for ALL obs. If we want no outlier check (outlier_threshold < 0)
+!      for all obs EXCEPT FROM SOME, we need to make some changes to the logic to allow the code to
+!      get to call "failed_outlier", enabled by enable_special_outlier_code = .true.
+!      The current code won't allow that, because if outlier_threshold < 0, we just exit.
+
+!if ( (outlier_threshold < 0) .or. (.not. good_dart_qc(dart_qc)) ) return  ! CSS commented out
+if ( .not. good_dart_qc(dart_qc))  return  ! CSS, only exit here based on QC flag, not outlier check flag
 
 error   = obs_prior_mean - obs_val
 diff_sd = sqrt(obs_prior_var + obs_err_var)
@@ -288,6 +296,7 @@ endif
 if (enable_special_outlier_code) then
    failed = failed_outlier(ratio, this_obs_key, obs_seq)
 else 
+   if ( (outlier_threshold < 0) ) return ! CSS added. Don't modify dart_qc if no outlier check
    failed = (ratio > outlier_threshold)
 endif
 
@@ -359,6 +368,14 @@ select case (this_obs_type)
 !      else
 !         failed_outlier = .false.
 !      endif
+    ! CSS added this in
+    case (RADAR_CLEARAIR_REFLECTIVITY, RADAR_REFLECTIVITY)
+       if (ratio > 3.0_r8 ) then
+          failed_outlier = .true.
+       else
+          failed_outlier = .false.
+       endif
+    ! End CSS 
 
 ! accept all values of this observation type no matter how far
 ! from the ensemble mean:
@@ -371,6 +388,7 @@ select case (this_obs_type)
       else
          failed_outlier = .false.
       endif
+      if ( (outlier_threshold < 0) ) failed_outlier = .false. ! CSS added. outlier_threshold < 0 means don't do outlier check
 
 end select
 

@@ -27,7 +27,7 @@ use obs_sequence_mod,     only : obs_sequence_type, obs_type, get_num_copies, ge
                                  destroy_obs
    
 use          obs_def_mod, only : obs_def_type, get_obs_def_location, get_obs_def_time,    &
-                                 get_obs_def_error_variance, get_obs_def_type_of_obs
+                                 get_obs_def_error_variance, get_obs_def_type_of_obs, return_external_FO ! CSS added return_external_FO
 
 use         obs_kind_mod, only : get_num_types_of_obs, get_index_for_type_of_obs,                   &
                                  get_quantity_for_type_of_obs, assimilate_this_type_of_obs
@@ -46,7 +46,8 @@ use         location_mod, only : location_type, get_close_type, query_location, 
                                  LocationDims, is_vertical, vertical_localization_on,     &
                                  set_vertical, has_vertical_choice, get_close_init,       &
                                  get_vertical_localization_coord, get_close_destroy,      &
-                                 set_vertical_localization_coord
+                                 set_vertical_localization_coord, &
+                                 get_location, horiz_dist_only ! CSS added this line, and made horiz_dist_only public in location_mod
 
 use ensemble_manager_mod, only : ensemble_type, get_my_num_vars, get_my_vars,             & 
                                  compute_copy_mean_var, get_var_owner_index,              &
@@ -71,6 +72,10 @@ use assim_model_mod,      only : get_state_meta_data,                           
 use distributed_state_mod, only : create_mean_window, free_mean_window
 
 use quality_control_mod, only : good_dart_qc, DARTQC_FAILED_VERT_CONVERT
+
+use radiance_bias_mod,    only : numiter, lupd_satbiasc, nobs_sat, use_HofX_ensmean, &
+                                 radiance_bias_init, radiance_bias_finalize, &
+                                 apply_biascorr, update_biascorr ! CSS added dependency to this module
 
 implicit none
 private
@@ -140,6 +145,8 @@ logical  :: sampling_error_correction       = .false.
 integer  :: adaptive_localization_threshold = -1
 real(r8) :: adaptive_cutoff_floor           = 0.0_r8
 integer  :: print_every_nth_obs             = 0
+logical  :: separate_localization_functions = .false. ! CSS added
+real(r8) :: vert_cutoff                     = -1.0_r8 ! CSS added
 
 ! since this is in the namelist, it has to have a fixed size.
 integer, parameter   :: MAX_ITEMS = 300
@@ -199,7 +206,8 @@ namelist / assim_tools_nml / filter_kind, cutoff, sort_obs_inc, &
    special_localization_obs_types, special_localization_cutoffs,           &
    distribute_mean, close_obs_caching,                                     &
    adjust_obs_impact, obs_impact_filename, allow_any_impact_values,        &
-   convert_all_state_verticals_first, convert_all_obs_verticals_first
+   convert_all_state_verticals_first, convert_all_obs_verticals_first, &
+   vert_cutoff, separate_localization_functions ! CSS added separate_localization_functions, vert_cutoff
 
 !============================================================================
 
@@ -400,6 +408,17 @@ real(digits12), allocatable :: elapse_array(:)
 
 integer, allocatable :: n_close_state_items(:), n_close_obs_items(:)
 
+! Begin CSS variables for bias correction
+integer :: niter, this_obs_key
+logical :: lastiter
+real(r8) :: HK, ens_mean_innov(1)
+real(r8) :: prior_H_x_ensmean(obs_ens_handle%my_num_vars), prior_H_x_ensmean_save(obs_ens_handle%my_num_vars)
+real(r8), allocatable :: prior_obs_ens(:,:)
+real(digits12) :: base_rad, elapsed_rad
+real(r8) :: cov_factor_vert, vert_dist, xyz_loc1(3), xyz_loc2(3) ! Variables for separate vertical localization
+logical  :: do_separate_localization = .false. ! Variables for separate vertical localization
+! End CSS
+
 ! timing disabled by default
 timing(:)  = .false.
 t_base(:)  = 0.0_r8
@@ -533,6 +552,26 @@ call get_my_vars(obs_ens_handle, my_obs_indx)
 ! Construct an observation temporary
 call init_obs(observation, get_num_copies(obs_seq), get_num_qc(obs_seq))
 
+! CSS If we want vertical localization (horiz_dist_only == .false., meaning vertical_localization_on() == .true. )
+!  but we want the horizontal and vertical localizations applied separately, get vertical localization 
+!  distance from namelist and force horiz_dist_only = .true., so localization is initially only applied in the 
+!  horizontal (below). Then manually compute the vertical localization and finally combine horizontal and vertical values.
+if ( separate_localization_functions .and. is_doing_vertical_conversion ) then 
+   do_separate_localization = .true. ! master logical to activate applying separate_localization
+
+   ! modify namelist variable. don't think this messes anything else up, but not 100% sure...
+   !   probably okay if everything (obs and state) are in the correct vertical localization coordinate through vert_convert before calling get_close_obs/state,
+   !   so force convert_all_obs_verticals_first and convert_all_state_verticals_first to true
+   !   places where it could maybe cause problems: get_dist (location_mod) and get_close_obs (model_mod)
+   horiz_dist_only = .true.  ! had to make this public from location_mod
+   convert_all_obs_verticals_first   = .true.
+   convert_all_state_verticals_first = .true.
+   write(msgstring, '(A)') 'Doing separate horizontal and vertical localization,'
+   write(msgstring2, '(A,F18.6)') 'The effective horizontal localization radius is ',cutoff*2.0_r8
+   write(msgstring3, '(A,F18.6)') 'The effective vertical localization radius is ',vert_cutoff*2.0_r8
+   call error_handler(E_MSG,'assim_tools_init:', msgstring, text2=msgstring2, text3=msgstring3)
+endif ! CSS
+
 ! Get the locations for all of my observations 
 ! HK I would like to move this to before the calculation of the forward operator so you could
 ! overwrite the vertical location with the required localization vertical coordinate when you 
@@ -608,6 +647,59 @@ if (has_special_cutoffs) then
 else
    call get_close_init(gc_obs, my_num_obs, 2.0_r8*cutoff, my_obs_loc)
 endif
+! -------------------------
+! Begin CSS bias correction
+! -------------------------
+! Initialize variational bias correction.  
+! This subroutine will read the namelist and set lupd_satbiasc and nobs_sat. 
+! It will also read the prior bias correction coefficients and initialize many variables within radiance_bias_mod
+call radiance_bias_init(obs_seq,obs_ens_handle,keys,OBS_GLOBAL_QC_COPY)
+if ( lupd_satbiasc .and. nobs_sat > 0 ) then
+   ! need to save the prior ensemble
+   allocate( prior_obs_ens(1:ens_size,my_num_obs))
+   prior_obs_ens(1:ens_size, :) = obs_ens_handle%copies(1:ens_size, :)
+   if ( use_HofX_ensmean ) then
+      do i = 1, obs_ens_handle%my_num_vars
+         this_obs_key = keys(obs_ens_handle%my_vars(i))
+         call get_obs_from_key(obs_seq, this_obs_key, observation)
+         call get_obs_def(observation, obs_def)
+         ! need some error checking to here to make sure there's a valid external prior
+         prior_H_x_ensmean(i) = return_external_FO(obs_def,ens_size+1) ! H(x_ensmean) and includes bias correction for ALL obs (including non-radiances)
+      enddo
+      prior_H_x_ensmean_save = prior_H_x_ensmean
+   endif
+
+   ! CSS we need to force sampling_error_correction = .false. except for last iteration to get results closer to EnSRF
+   !    Even turning it on for the last iteration could make results differ from EnSRF
+endif
+! -------------------------
+! End CSS bias correction
+! -------------------------
+
+do niter = 1,numiter ! CSS start loop over number of iterations for updating bias correction coefficients
+
+   ! -------------------------
+   ! Begin CSS bias correction
+   ! -------------------------
+   lastiter = niter == numiter
+
+   ! For niter > 1, obs (obs_ens_handle) have changed through OBS_UPDATE (obs updating priors through joint state)
+   ! So, we need to reset the ob priors back to their original values. Should NOT need to recompute the original mean.
+   ! Then, we need to update the radiance priors based on the new bias correction coefficients
+   if (nobs_sat > 0 .and. lupd_satbiasc ) then
+      call start_mpi_timer(base_rad)
+      write(msgstring, '(A,1x,I2,1x,A,I2)') 'Starting iteration ', niter, ' of ', numiter
+      call error_handler(E_MSG,'filter_assim: ',msgstring)
+      if ( niter > 1 ) then
+         obs_ens_handle%copies(1:ens_size, :) = prior_obs_ens(1:ens_size, :) ! reset priors to their original values
+         if ( use_HofX_ensmean ) prior_H_x_ensmean = prior_H_x_ensmean_save
+         ! apply bias correction to radiance obs with latest estimate of bias coeffs (already done for first iteration)
+         call apply_biascorr(obs_seq,obs_ens_handle,ens_size,prior_H_x_ensmean)
+      endif
+   endif
+   ! ------
+   ! End CSS
+   ! ------
 
 if (close_obs_caching) then
    ! Initialize last obs and state get_close lookups, to take advantage below 
@@ -647,7 +739,7 @@ SEQUENTIAL_OBS: do i = 1, obs_ens_handle%num_vars
    ! If requested, print out a message every Nth observation
    ! to indicate progress is being made and to allow estimates 
    ! of how long the assim will take.
-   if (nth_obs == 0) then
+   if ( lastiter .and. nth_obs == 0) then ! CSS added lastiter
       write(msgstring, '(2(A,I8))') 'Processing observation ', i, &
                                          ' of ', obs_ens_handle%num_vars
       if (print_timestamps == 0) then
@@ -777,6 +869,11 @@ SEQUENTIAL_OBS: do i = 1, obs_ens_handle%num_vars
            scalar2=vertvalue_obs_in_localization_coord, scalar3=whichvert_real)
       endif
 
+      if ( lupd_satbiasc .and. nobs_sat > 0 .and. use_HofX_ensmean ) then ! CSS
+         ens_mean_innov(1) = obs(1) - prior_H_x_ensmean(owners_index) ! CSS ensemble mean innovation (y-H(x_ensmean))
+         call broadcast_send(map_pe_to_task(ens_handle, owner), ens_mean_innov) ! CSS
+      endif ! CSS
+
    ! Next block is done by processes that do NOT own this observation
    !-----------------------------------------------------------------------
    else
@@ -800,6 +897,9 @@ SEQUENTIAL_OBS: do i = 1, obs_ens_handle%num_vars
       endif
       whichvert_obs_in_localization_coord = nint(whichvert_real)
 
+      if ( lupd_satbiasc .and. nobs_sat > 0 .and. use_HofX_ensmean ) then ! CSS
+         call broadcast_recv(map_pe_to_task(ens_handle, owner), ens_mean_innov) ! CSS
+      endif ! CSS
    endif
    !-----------------------------------------------------------------------
 
@@ -907,7 +1007,7 @@ SEQUENTIAL_OBS: do i = 1, obs_ens_handle%num_vars
                                        total_num_close_obs, base_obs_loc, &
                                        adaptive_cutoff_floor*2.0_r8) / 2.0_r8
 
-         if ( output_localization_diagnostics ) then
+         if ( output_localization_diagnostics .and. lastiter ) then ! CSS added lastiter
 
             ! to really know how many obs are left now, you have to 
             ! loop over all the obs, again, count how many kinds are 
@@ -941,7 +1041,7 @@ SEQUENTIAL_OBS: do i = 1, obs_ens_handle%num_vars
 
       endif
 
-   else if (output_localization_diagnostics) then
+   else if (output_localization_diagnostics .and. lastiter ) then ! CSS added lastiter
 
       ! if you aren't adapting but you still want to know how many obs are within the
       ! localization radius, set the diag output.  this could be large, use carefully.
@@ -963,6 +1063,7 @@ SEQUENTIAL_OBS: do i = 1, obs_ens_handle%num_vars
 
    ! Now everybody updates their close states
    ! Find state variables on my process that are close to observation being assimilated
+   if ( lastiter ) then ! CSS only update state on last iteration
    if (.not. close_obs_caching) then
       if (timing(GC)) call start_timer(t_base(GC), t_items(GC), t_limit(GC), do_sync=.false.)
       call get_close_state(gc_state, base_obs_loc, base_obs_type, &
@@ -995,6 +1096,9 @@ SEQUENTIAL_OBS: do i = 1, obs_ens_handle%num_vars
          num_close_states_calls_made = num_close_states_calls_made + 1 
       endif
    endif
+   else ! CSS
+      num_close_states = 0 ! CSS...setting this = 0 skips state update
+   endif ! CSS
 
    n_close_state_items(i) = num_close_states
    !print*, 'num close state', num_close_states
@@ -1031,6 +1135,18 @@ SEQUENTIAL_OBS: do i = 1, obs_ens_handle%num_vars
       ! Compute the distance and covariance factor 
       cov_factor = comp_cov_factor(close_state_dist(j), cutoff_rev, &
          base_obs_loc, base_obs_type, my_state_loc(state_index), my_state_kind(state_index))
+
+      ! CSS if do_separate_localization = true., cov_factor above was computed with only horizontal distances.
+      if ( do_separate_localization ) then
+         if ( vert_cutoff > 0 ) then
+            xyz_loc1 = get_location(base_obs_loc)
+            xyz_loc2 = get_location(my_state_loc(state_index))
+            vert_dist = abs(xyz_loc1(3) - xyz_loc2(3))
+            cov_factor_vert = comp_cov_factor(vert_dist, vert_cutoff, &
+               base_obs_loc, base_obs_type, my_state_loc(state_index), my_state_kind(state_index))
+            cov_factor = cov_factor * cov_factor_vert 
+         endif 
+      endif  !End  CSS
 
       ! if external impact factors supplied, factor them in here
       ! FIXME: this would execute faster for 0.0 impact factors if
@@ -1166,7 +1282,7 @@ SEQUENTIAL_OBS: do i = 1, obs_ens_handle%num_vars
       obs_index = close_obs_ind(j)
 
       ! Only have to update obs that have not yet been used
-      if(my_obs_indx(obs_index) > i) then
+      if(my_obs_indx(obs_index) > i .or. (lupd_satbiasc .and. nobs_sat > 0) ) then ! CSS added 2nd condition. For updating radiance bias correction coefficients, to mimic NOAA EnSRF, let this observation update a previously-assimilated observation for bias correction purposes. Shouldn't hurt anything else.
 
          ! If the forward observation operator failed, no need to 
          ! update the unassimilated observations 
@@ -1175,6 +1291,18 @@ SEQUENTIAL_OBS: do i = 1, obs_ens_handle%num_vars
          ! Compute the distance and the covar_factor
          cov_factor = comp_cov_factor(close_obs_dist(j), cutoff_rev, &
             base_obs_loc, base_obs_type, my_obs_loc(obs_index), my_obs_kind(obs_index))
+
+         ! CSS if do_separate_localization = true., cov_factor above was computed with only horizontal distances.
+         if ( do_separate_localization ) then
+            if ( vert_cutoff > 0 ) then
+               xyz_loc1 = get_location(base_obs_loc)
+               xyz_loc2 = get_location(my_obs_loc(obs_index))
+               vert_dist = abs(xyz_loc1(3) - xyz_loc2(3))
+               cov_factor_vert = comp_cov_factor(vert_dist, vert_cutoff, &
+                  base_obs_loc, base_obs_type, my_obs_loc(obs_index), my_obs_kind(obs_index))
+               cov_factor = cov_factor * cov_factor_vert
+            endif
+         endif  ! CSS
 
          ! if external impact factors supplied, factor them in here
          ! FIXME: this would execute faster for 0.0 impact factors if
@@ -1219,6 +1347,10 @@ SEQUENTIAL_OBS: do i = 1, obs_ens_handle%num_vars
          if(.not. inflate_only) then
             obs_ens_handle%copies(1:ens_size, obs_index) = &
               obs_ens_handle%copies(1:ens_size, obs_index) + reg_factor * increment
+              if ( lupd_satbiasc .and. nobs_sat > 0 .and. use_HofX_ensmean ) then ! CSS, Do explicit, EnSRF-like update of the mean prior
+                 HK = obs_prior_var(1) / ( obs_prior_var(1) + obs_err_var )
+                 prior_H_x_ensmean(obs_index) = prior_H_x_ensmean(obs_index) + reg_factor * reg_coef(1) * HK * ens_mean_innov(1) ! Hx_a = Hx_b + HK*(y-Hx_ensmean)
+              endif ! CSS
          endif
       endif
    end do OBS_UPDATE
@@ -1234,6 +1366,39 @@ SEQUENTIAL_OBS: do i = 1, obs_ens_handle%num_vars
       call read_timer(t_base(MLOOP), msgstring, elapsed = elapse_array(i))
    endif
 end do SEQUENTIAL_OBS
+
+   ! ---------
+   ! Begin CSS satellite bias correction update.
+   ! ---------
+   if (nobs_sat > 0 .and. lupd_satbiasc) then
+      elapsed_rad = read_mpi_timer(base_rad)
+      write(msgstring, '(A,1x,I2,1x,A,I2,1x,A,1x,F12.4,1x,A)') 'Done with iteration ', niter, ' of ', numiter,', which took ',elapsed_rad,' seconds'
+      call error_handler(E_MSG,'filter_assim: ',msgstring)
+      ! make sure posterior perturbations still have zero mean as in NOAA's EnSRF; as they note, "roundoff errors can accumulate"
+     !do j = 1,obs_ens_handle%my_num_vars
+     !   obs_ens_handle%copies(1:ens_size, j) = obs_ens_handle%copies(1:ens_size, j) - &
+     !      sum(obs_ens_handle%copies(1:ens_size, j),1)/(ens_size-1)
+     !enddo
+      ! Update bias correction. This routine first gathers all radiance obs on all processors before updating the coefficients
+      call update_biascorr(int(niter,i8),obs_seq, obs_ens_handle, keys, obs_val_index, OBS_PRIOR_MEAN_START, ens_size, OBS_GLOBAL_QC_COPY, prior_H_x_ensmean)
+   endif
+   ! ---------
+   ! End CSS satellite bias correction update.
+   ! ---------
+
+end do ! CSS end loop over numiter for bias correction
+
+! ---------
+! CSS Begin
+! ---------
+if ( lupd_satbiasc ) then
+   ! add bias correction increment to the prior and output bias correction coefficient file
+   call radiance_bias_finalize ! okay to call even if nobs_sat == 0
+   if (nobs_sat > 0 ) deallocate(prior_obs_ens)
+end if
+! ---------
+! CSS End
+! ---------
 
 ! Every pe needs to get the current my_inflate and my_inflate_sd back
 if(local_single_ss_inflate) then

@@ -1,0 +1,16 @@
+The following files are copied from GSI/enkf without modifications
+   constants.f90
+   kinds.F90
+   readozobs.f90
+   mpi_readobs.f90
+
+File mpi_readobs.f90 was also copied from GSI/enkf with a slight change:
+
+   The line "use radinfo, only: npred" is now "use params, only: npred"
+
+   There is no module named radinfo in the jedi2DART directory
+
+These two files were also initially copied from GSI/enkf and then heavily modified.
+But, the overall strucutre of the subroutines was kept
+   readconvobs.f90
+   readsatobs.f90

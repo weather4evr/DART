@@ -1,0 +1,53 @@
+K 25
+svn:wc:ra_dav:version-url
+V 81
+/!svn/ver/11382/DART/releases/Manhattan/observations/obs_converters/GSI2DART/enkf
+END
+mpi_readobs.f90
+K 25
+svn:wc:ra_dav:version-url
+V 97
+/!svn/ver/11371/DART/releases/Manhattan/observations/obs_converters/GSI2DART/enkf/mpi_readobs.f90
+END
+readconvobs.f90
+K 25
+svn:wc:ra_dav:version-url
+V 97
+/!svn/ver/11371/DART/releases/Manhattan/observations/obs_converters/GSI2DART/enkf/readconvobs.f90
+END
+readsatobs.f90
+K 25
+svn:wc:ra_dav:version-url
+V 96
+/!svn/ver/11371/DART/releases/Manhattan/observations/obs_converters/GSI2DART/enkf/readsatobs.f90
+END
+kinds.F90
+K 25
+svn:wc:ra_dav:version-url
+V 91
+/!svn/ver/11371/DART/releases/Manhattan/observations/obs_converters/GSI2DART/enkf/kinds.F90
+END
+readozobs.f90
+K 25
+svn:wc:ra_dav:version-url
+V 95
+/!svn/ver/11371/DART/releases/Manhattan/observations/obs_converters/GSI2DART/enkf/readozobs.f90
+END
+constants.f90
+K 25
+svn:wc:ra_dav:version-url
+V 95
+/!svn/ver/11371/DART/releases/Manhattan/observations/obs_converters/GSI2DART/enkf/constants.f90
+END
+read_diag.f90
+K 25
+svn:wc:ra_dav:version-url
+V 95
+/!svn/ver/11371/DART/releases/Manhattan/observations/obs_converters/GSI2DART/enkf/read_diag.f90
+END
+README
+K 25
+svn:wc:ra_dav:version-url
+V 88
+/!svn/ver/11371/DART/releases/Manhattan/observations/obs_converters/GSI2DART/enkf/README
+END

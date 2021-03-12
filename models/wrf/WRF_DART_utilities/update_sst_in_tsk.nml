@@ -1,0 +1,9 @@
+&update_sst_in_tsk_nml
+   update_in_file_name   = 'wrfinput_d01_mean',
+   update_out_file_name  = 'wrfinput_d01',
+   input_field           = 'SST',
+   output_field          = 'TSK',
+   mask_field            = 'LANDMASK',
+   date_check            = .true.,
+   debug                 = .false.,
+   /

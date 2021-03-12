@@ -4,21 +4,21 @@ use kinds, only: r_kind, r_single, i_kind
 use params
 use mpisetup
 
-use obs_utilities_mod, only : add_obs_to_seq
+use  obs_utilities_mod, only : add_obs_to_seq
 use  obs_sequence_mod, only : obs_type, obs_sequence_type, init_obs_sequence, insert_obs_in_seq, &
                               set_copy_meta_data, set_qc_meta_data, write_obs_seq, assignment(=), &
                               init_obs, static_init_obs_sequence, set_obs_def, set_obs_values, set_qc, &
                               destroy_obs, destroy_obs_sequence
 use       obs_def_mod, only : set_obs_def_location, set_obs_def_error_variance, &
                               set_obs_def_type_of_obs, set_obs_def_time, set_obs_def_key, &
-                              obs_def_type,set_obs_def_external_FO,destroy_obs_def ! CSS added set_obs_def_external_FO, destroy_obs_def
+                              obs_def_type,set_obs_def_external_FO,destroy_obs_def,set_obs_def_bc_predictors ! CSS added set_obs_def_external_FO, destroy_obs_def, set_obs_def_bc_predictors
 use   obs_def_gps_mod, only : set_gpsro_ref
 use         types_mod, only : obstypelength
 use      obs_kind_mod
 use      location_mod, only : location_type, set_location, VERTISSURFACE, VERTISPRESSURE, VERTISHEIGHT
 use  time_manager_mod, only : time_type, set_date, set_time, set_calendar_type, GREGORIAN, &
                               increment_time, decrement_time, get_time
-use radinfo, only           : nuchan
+use radinfo, only           : nuchan, npred ! CSS added npred
 use utilities_mod, only     : to_upper
 
 implicit none
@@ -56,13 +56,15 @@ subroutine dart_obs_seq (datestring,                              &
    integer                 :: year, month, day, hour, days, seconds
    integer                 :: gps_key = 0
    real(r_kind)            :: gnx, gny, gnz, ds, htop, rfict
-   real(r_kind)            :: lat, lon, vloc, obsv, oerr
+   real(r_kind)            :: lat, lon, vloc, obsv, oerr, bias_amount ! CSS added bias_amount
    real(r_kind)            :: qc_val(2)
    real(r_kind)            :: missing_val  = -888888.000
    real(r_kind),allocatable  :: ens_copy(:)
 
    logical                 :: write_external
    logical                 :: has_external = .true.
+   logical                 :: output_bias_preds = .true. ! CSS added, should go in namelist
+   real(r_kind)            :: these_bias_preds(npred+2)  ! CSS added
 
    ! Number of obs to process
    num_obs = nobs_end - nobs_start + 1
@@ -236,6 +238,17 @@ subroutine dart_obs_seq (datestring,                              &
       !  if ( obskind == GPSRO_REFRACTIVITY ) cycle obsloop
       !endif
 
+      if ( is_sat .and. convert_sat ) then
+         output_bias_preds = .true.
+         if ( output_bias_preds ) then
+          ! biaspreds(npred+1,nobs_sat)
+            bias_amount = (ensmean_ob(i)-ensmean_obnobc(i))
+            these_bias_preds(1:npred+1) = biaspreds(1:npred+1,i-nobs_conv-nobs_oz)
+            these_bias_preds(npred+2) = bias_amount
+            call set_obs_def_bc_predictors(obs_def, .true. , npred, these_bias_preds)
+         endif
+      endif
+
       call set_obs_def_error_variance(obs_def, oerr)  ! oerr is the ob error variance
       !call set_obs_def_key(obs_def, key)
       call set_obs_def(obs, obs_def)
@@ -276,28 +289,36 @@ subroutine prepbufr_to_dart_obs_kind (obtype, obstype, obs_kind, which_vert, obs
    obs_kind_gen = -1
 
    if(obtype(1:3) == 'gps') then
+     obs_kind_gen = GPSRO_REFRACTIVITY ! Probably should be QTY_GPSRO, but likely doesn't matter
      obs_kind     = GPSRO_REFRACTIVITY
-     obs_kind_gen = GPSRO_REFRACTIVITY
+   endif
+
+   if(obtype(1:3) == ' pw') then
+      obs_kind_gen =  QTY_PRECIPITABLE_WATER
+      if(obstype == 153                    ) obs_kind = GPS_PRECIPITABLE_WATER
    endif
 
    if(obtype(1:3) == '  t') then
      obs_kind_gen = QTY_TEMPERATURE
      if(obstype == 120 .or. obstype == 132) obs_kind = RADIOSONDE_TEMPERATURE
      if(obstype == 130 .or. obstype == 131) obs_kind = AIRCRAFT_TEMPERATURE
-     if(obstype == 133                    ) obs_kind = ACARS_TEMPERATURE
+     if(obstype == 133 .or. obstype == 134) obs_kind = ACARS_TEMPERATURE ! CSS HRRRE calls this AMDAR_TEMPERATURE
+     if(obstype == 135                    ) obs_kind = AMDAR_TEMPERATURE
      if(obstype == 161 .or. obstype == 163) obs_kind = ATOV_TEMPERATURE
      if(obstype == 171 .or. obstype == 173) obs_kind = ATOV_TEMPERATURE
      if(obstype == 180 .or. obstype == 182) obs_kind = MARINE_SFC_TEMPERATURE
-     if(obstype == 181 .or. obstype == 183) obs_kind = LAND_SFC_TEMPERATURE
+     if(obstype == 181 .or. obstype == 183 .or. obstype == 187 ) obs_kind = LAND_SFC_TEMPERATURE
+     if(obstype == 188 )                    obs_kind = MESONET_TEMPERATURE       ! CSS 
    endif
 
    if(obtype(1:3) == '  q') then
      obs_kind_gen = QTY_SPECIFIC_HUMIDITY
      if(obstype == 120 .or. obstype == 132) obs_kind = RADIOSONDE_RELATIVE_HUMIDITY  ! RADIOSONDE_SPECIFIC_HUMIDITY
      if(obstype == 130 .or. obstype == 131) obs_kind = AIRCRAFT_RELATIVE_HUMIDITY    ! AIRCRAFT_SPECIFIC_HUMIDITY
-     if(obstype == 133                    ) obs_kind = ACARS_RELATIVE_HUMIDITY       ! ACARS_SPECIFIC_HUMIDITY
+     if(obstype == 133 .or. obstype == 134) obs_kind =  ACARS_RELATIVE_HUMIDITY       ! ACARS_SPECIFIC_HUMIDITY  ! Really should be AMDAR per HRRRE changes, but that requires some obs_def/preprocess changes.
      if(obstype == 180 .or. obstype == 182) obs_kind = MARINE_SFC_RELATIVE_HUMIDITY  ! MARINE_SFC_SPECIFIC_HUMIDITY
-     if(obstype == 181 .or. obstype == 183) obs_kind = LAND_SFC_RELATIVE_HUMIDITY    ! LAND_SFC_SPECIFIC_HUMIDITY
+     if(obstype == 181 .or. obstype == 183  .or. obstype == 187 ) obs_kind = LAND_SFC_RELATIVE_HUMIDITY    ! LAND_SFC_SPECIFIC_HUMIDITY
+     if(obstype == 188 )                    obs_kind = MESONET_RELATIVE_HUMIDITY ! CSS 
    endif
 
    if(obtype(1:3) == ' ps') then
@@ -306,20 +327,23 @@ subroutine prepbufr_to_dart_obs_kind (obtype, obstype, obs_kind, which_vert, obs
      if(obstype == 120                    ) obs_kind = RADIOSONDE_SURFACE_PRESSURE ! RADIOSONDE_SURFACE_ALTIMETER
      if(obstype == 180 .or. obstype == 182) obs_kind = MARINE_SFC_PRESSURE !MARINE_SFC_ALTIMETER
      if(obstype == 181 .or. obstype == 187) obs_kind = LAND_SFC_PRESSURE   !LAND_SFC_ALTIMETER
+     if(obstype == 188 )                    obs_kind = MESONET_SURFACE_PRESSURE  ! CSS 
    endif
 
    if(obtype(1:3) == '  u') then
      obs_kind_gen = QTY_U_WIND_COMPONENT
      if(obstype == 220 .or. obstype == 232)  obs_kind = RADIOSONDE_U_WIND_COMPONENT
      if(obstype == 221                    )  obs_kind = RADIOSONDE_U_WIND_COMPONENT
-     if(obstype == 223                    )  obs_kind = PROFILER_U_WIND_COMPONENT
-     if(obstype == 224                    )  obs_kind = PILOT_U_WIND_COMPONENT !VADWND actually
+     if(obstype == 223 .or. obstype == 227)  obs_kind = PROFILER_U_WIND_COMPONENT
+     if(obstype == 224                    )  obs_kind = VADWND_U_WIND_COMPONENT ! CSS added new type ! PILOT_U_WIND_COMPONENT !VADWND actually
      if(obstype == 229                    )  obs_kind = PILOT_U_WIND_COMPONENT
      if(obstype == 230 .or. obstype == 231)  obs_kind = AIRCRAFT_U_WIND_COMPONENT
-     if(obstype == 233                    )  obs_kind = ACARS_U_WIND_COMPONENT
+     if(obstype == 233 .or. obstype == 234)  obs_kind = ACARS_U_WIND_COMPONENT
+     if(obstype == 235                    )  obs_kind = AMDAR_U_WIND_COMPONENT
      if(obstype == 280 .or. obstype == 282)  obs_kind = MARINE_SFC_U_WIND_COMPONENT
-     if(obstype == 281 .or. obstype == 284)  obs_kind = LAND_SFC_U_WIND_COMPONENT
-     if(obstype >= 240 .and. obstype <= 259) obs_kind = SAT_U_WIND_COMPONENT
+     if(obstype == 281 .or. obstype == 284  .or. obstype == 287 )  obs_kind = LAND_SFC_U_WIND_COMPONENT
+     if(obstype == 288 ) obs_kind = MESONET_U_WIND_COMPONENT ! CSS added
+     if(obstype >= 240 .and. obstype <= 260) obs_kind = SAT_U_WIND_COMPONENT
      ! 285 is QSCAT
      if(obstype == 285                    )  obs_kind = QKSWND_U_WIND_COMPONENT
      ! 289 is WINDSAT, 290 is ASCAT, 291 is OSCAT
@@ -330,14 +354,16 @@ subroutine prepbufr_to_dart_obs_kind (obtype, obstype, obs_kind, which_vert, obs
      obs_kind_gen = QTY_V_WIND_COMPONENT
      if(obstype == 220 .or. obstype == 232)  obs_kind = RADIOSONDE_V_WIND_COMPONENT
      if(obstype == 221                    )  obs_kind = RADIOSONDE_V_WIND_COMPONENT
-     if(obstype == 223                    )  obs_kind = PROFILER_V_WIND_COMPONENT
-     if(obstype == 224                    )  obs_kind = PILOT_V_WIND_COMPONENT !VADWND actually
+     if(obstype == 223 .or. obstype == 227)  obs_kind = PROFILER_V_WIND_COMPONENT
+     if(obstype == 224                    )  obs_kind = VADWND_V_WIND_COMPONENT ! CSS added new type !PILOT_V_WIND_COMPONENT !VADWND actually
      if(obstype == 229                    )  obs_kind = PILOT_V_WIND_COMPONENT
      if(obstype == 230 .or. obstype == 231)  obs_kind = AIRCRAFT_V_WIND_COMPONENT
-     if(obstype == 233                    )  obs_kind = ACARS_V_WIND_COMPONENT
+     if(obstype == 233 .or. obstype == 234)  obs_kind = ACARS_V_WIND_COMPONENT
+     if(obstype == 235                    )  obs_kind = AMDAR_V_WIND_COMPONENT
      if(obstype == 280 .or. obstype == 282)  obs_kind = MARINE_SFC_V_WIND_COMPONENT
-     if(obstype == 281 .or. obstype == 284)  obs_kind = LAND_SFC_V_WIND_COMPONENT
-     if(obstype >= 240 .and. obstype <= 259) obs_kind = SAT_V_WIND_COMPONENT
+     if(obstype == 281 .or. obstype == 284 .or. obstype == 287 )  obs_kind = LAND_SFC_V_WIND_COMPONENT
+     if(obstype == 288 ) obs_kind = MESONET_V_WIND_COMPONENT ! CSS added
+     if(obstype >= 240 .and. obstype <= 260) obs_kind = SAT_V_WIND_COMPONENT
      ! 285 is QSCAT
      if(obstype == 285                    )  obs_kind = QKSWND_V_WIND_COMPONENT
      ! 289 is WINDSAT, 290 is ASCAT, 291 is OSCAT
@@ -375,7 +401,7 @@ subroutine radiance_to_dart_obs_kind(obtype, channel, obs_kind, which_vert, obs_
    
    ! Be careful about upper/lower case.  Make sure this matches the obs_def
    obs_kind =  get_index_for_type_of_obs(this_string)    ! from obs_kind_mod
-   obs_kind_gen = QTY_TEMPERATURE ! QTY_RADIANCE
+   obs_kind_gen = QTY_BRIGHTNESS_TEMPERATURE ! CSS changed to QTY_BRIGHTNESS_TEMPERATURE QTY_TEMPERATURE ! QTY_RADIANCE
    which_vert  = VERTISPRESSURE
 end subroutine radiance_to_dart_obs_kind
 
@@ -393,7 +419,7 @@ function write_this_ob_type_external_FO(ob_type)
 
    integer                            :: i
    logical                       :: is_all
-   character(len = obstypelength)  :: ob_type_string  ! obstypelength from obs_kind_mod
+   character(len = obstypelength)  :: ob_type_string  ! obstypelength from types_mod
 
    ! Initialize to false
    write_this_ob_type_external_FO = .false.

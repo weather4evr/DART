@@ -452,9 +452,9 @@ subroutine get_convobs_data(obspath, datestring, nobs_max, h_x_ensmean, h_xnobc,
           ! ob minus un-bias-corrected background (individ members)
           h_xnobc(nob) = rdiagbuf(17,n)-rdiagbuf2(19,n)
          !h_xnobc(nob) = rdiagbuf(17,n)-rdiagbuf2(19,n) ! - ( rdiagbuf(18,n) - rdiagbuf(19,n)) ! CSS added last term in parentheses to give mean bias correction to member
-          write(6,*) 'CSS B1 = ',h_x_ensmean(nob) - ( rdiagbuf(17,n)-rdiagbuf(19,n) ) ! CSS
-          write(6,*) 'CSS B2 = ',h_x_ensmean(nob) / ( rdiagbuf(17,n)-rdiagbuf(19,n) ) ! CSS
-          write(6,*) 'CSS mean no BC  = ',rdiagbuf(19,n)
+         !write(6,*) 'CSS B1 = ',h_x_ensmean(nob) - ( rdiagbuf(17,n)-rdiagbuf(19,n) ) ! CSS
+         !write(6,*) 'CSS B2 = ',h_x_ensmean(nob) / ( rdiagbuf(17,n)-rdiagbuf(19,n) ) ! CSS
+         !write(6,*) 'CSS mean no BC  = ',rdiagbuf(19,n)
        enddo
        deallocate(cdiagbuf,rdiagbuf,rdiagbuf2)
        if(twofiles)deallocate(cdiagbuf2)

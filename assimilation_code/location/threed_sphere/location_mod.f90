@@ -45,7 +45,7 @@ public :: location_type, get_location, set_location, &
           set_vertical, is_vertical, get_vertical_localization_coord, get_close, &
           set_vertical_localization_coord, convert_vertical_obs, convert_vertical_state, &
           VERTISUNDEF, VERTISSURFACE, VERTISLEVEL, VERTISPRESSURE, &
-          VERTISHEIGHT, VERTISSCALEHEIGHT, print_get_close_type
+          VERTISHEIGHT, VERTISSCALEHEIGHT, print_get_close_type, horiz_dist_only ! CSS added horiz_dist_only
 
 
 ! version controlled file description for error handling, do not edit
